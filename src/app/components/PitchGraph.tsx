@@ -30,6 +30,34 @@ const CENTS_PERFECT = 10
 const CENTS_CLOSE = 25
 const CENTS_FAR = 50
 
+// Note names and properties
+const NOTE_NAMES = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si']
+const BLACK_KEYS = [1, 3, 6, 8, 10] // Indices of sharps/flats
+
+// Generate all semitones in frequency range
+function generateSemitones(minFreq: number, maxFreq: number): { note: string; freq: number; isBlack: boolean }[] {
+  const A4 = 440
+  const semitones: { note: string; freq: number; isBlack: boolean }[] = []
+
+  // Start from C2 (65.41 Hz) and go up
+  for (let midi = 36; midi <= 84; midi++) { // C2 to C6
+    const freq = A4 * Math.pow(2, (midi - 69) / 12)
+    if (freq >= minFreq && freq <= maxFreq) {
+      const noteIndex = midi % 12
+      const octave = Math.floor(midi / 12) - 1
+      const noteName = NOTE_NAMES[noteIndex]
+      semitones.push({
+        note: `${noteName}${octave}`,
+        freq,
+        isBlack: BLACK_KEYS.includes(noteIndex)
+      })
+    }
+  }
+  return semitones
+}
+
+const SEMITONES = generateSemitones(MIN_FREQ, MAX_FREQ)
+
 export function PitchGraph({
   frequency,
   targetNote,
@@ -125,6 +153,41 @@ export function PitchGraph({
             const ctx = u.ctx
             const { left, top, width, height } = u.bbox
             const targetFreq = targetFreqRef.current
+
+            // Draw piano-style semitone lines
+            ctx.font = '14px system-ui, sans-serif'
+            ctx.textBaseline = 'middle'
+
+            SEMITONES.forEach(({ note, freq, isBlack }) => {
+              const y = u.valToPos(freq, 'y', true)
+
+              // Background stripe for each semitone
+              const nextFreq = freq * Math.pow(2, 1 / 12)
+              const prevFreq = freq * Math.pow(2, -1 / 12)
+              const topY = u.valToPos(Math.sqrt(freq * nextFreq), 'y', true)
+              const bottomY = u.valToPos(Math.sqrt(freq * prevFreq), 'y', true)
+
+              // Alternate colors like piano keys
+              if (isBlack) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
+              } else {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+              }
+              ctx.fillRect(left, topY, width, bottomY - topY)
+
+              // Draw line at exact note frequency
+              ctx.strokeStyle = isBlack ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.2)'
+              ctx.lineWidth = 1
+              ctx.beginPath()
+              ctx.moveTo(left, y)
+              ctx.lineTo(left + width, y)
+              ctx.stroke()
+
+              // Note label on the right side
+              ctx.fillStyle = isBlack ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.7)'
+              ctx.textAlign = 'right'
+              ctx.fillText(note, left + width - 10, y)
+            })
 
             // Draw bands around target frequency
             if (targetFreq >= MIN_FREQ && targetFreq <= MAX_FREQ) {
