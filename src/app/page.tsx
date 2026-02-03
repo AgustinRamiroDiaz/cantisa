@@ -4,26 +4,12 @@ import { useState } from 'react'
 import { usePitchDetector } from './components/PitchDetector'
 import { PitchGraph } from './components/PitchGraph'
 
-// Exercise notes - a simple scale for beginners
-const EXERCISE_NOTES = ['Do4', 'Re4', 'Mi4', 'Fa4', 'Sol4', 'La4', 'Si4', 'Do5']
-
 export default function Home() {
-  const [currentNoteIndex, setCurrentNoteIndex] = useState(0)
+  const [targetNote, setTargetNote] = useState('La3')
+  const [toleranceCents, setToleranceCents] = useState(10)
+  const [noteRange, setNoteRange] = useState({ from: 'Do3', to: 'Do5' })
+
   const { isListening, pitchData, error, startListening, stopListening } = usePitchDetector()
-
-  const targetNote = EXERCISE_NOTES[currentNoteIndex]
-
-  const handleNext = () => {
-    if (currentNoteIndex < EXERCISE_NOTES.length - 1) {
-      setCurrentNoteIndex(currentNoteIndex + 1)
-    }
-  }
-
-  const handlePrevious = () => {
-    if (currentNoteIndex > 0) {
-      setCurrentNoteIndex(currentNoteIndex - 1)
-    }
-  }
 
   const handleToggle = () => {
     if (isListening) {
@@ -31,6 +17,10 @@ export default function Home() {
     } else {
       startListening()
     }
+  }
+
+  const handleNoteRangeChange = (from: string, to: string) => {
+    setNoteRange({ from, to })
   }
 
   return (
@@ -46,12 +36,11 @@ export default function Home() {
         targetNote={targetNote}
         isActive={isListening}
         onToggle={handleToggle}
-        onNext={handleNext}
-        onPrevious={handlePrevious}
-        canGoNext={currentNoteIndex < EXERCISE_NOTES.length - 1}
-        canGoPrevious={currentNoteIndex > 0}
-        currentIndex={currentNoteIndex}
-        totalNotes={EXERCISE_NOTES.length}
+        onTargetChange={setTargetNote}
+        toleranceCents={toleranceCents}
+        onToleranceChange={setToleranceCents}
+        noteRange={noteRange}
+        onNoteRangeChange={handleNoteRangeChange}
       />
     </main>
   )

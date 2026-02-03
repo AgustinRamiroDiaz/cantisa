@@ -10,37 +10,34 @@ interface PitchGraphProps {
   targetNote: string
   isActive: boolean
   onToggle: () => void
-  onNext: () => void
-  onPrevious: () => void
-  canGoNext: boolean
-  canGoPrevious: boolean
-  currentIndex: number
-  totalNotes: number
+  onTargetChange: (note: string) => void
+  toleranceCents: number
+  onToleranceChange: (cents: number) => void
+  noteRange: { from: string; to: string }
+  onNoteRangeChange: (from: string, to: string) => void
 }
-
-// Frequency range for vocal (roughly C3 to C6)
-const MIN_FREQ = 120
-const MAX_FREQ = 600
 
 // Time window in seconds
 const TIME_WINDOW = 6
 
-// Cents thresholds for bands
-const CENTS_PERFECT = 10
-const CENTS_CLOSE = 25
-const CENTS_FAR = 50
-
 // Note names and properties
 const NOTE_NAMES = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si']
-const BLACK_KEYS = [1, 3, 6, 8, 10] // Indices of sharps/flats
+const BLACK_KEYS = [1, 3, 6, 8, 10]
 
-// Generate all semitones in frequency range
+// All available notes for selection
+const ALL_NOTES: string[] = []
+for (let midi = 36; midi <= 84; midi++) {
+  const noteIndex = midi % 12
+  const octave = Math.floor(midi / 12) - 1
+  ALL_NOTES.push(`${NOTE_NAMES[noteIndex]}${octave}`)
+}
+
+
 function generateSemitones(minFreq: number, maxFreq: number): { note: string; freq: number; isBlack: boolean }[] {
   const A4 = 440
   const semitones: { note: string; freq: number; isBlack: boolean }[] = []
 
-  // Start from C2 (65.41 Hz) and go up
-  for (let midi = 36; midi <= 84; midi++) { // C2 to C6
+  for (let midi = 24; midi <= 96; midi++) {
     const freq = A4 * Math.pow(2, (midi - 69) / 12)
     if (freq >= minFreq && freq <= maxFreq) {
       const noteIndex = midi % 12
@@ -56,19 +53,18 @@ function generateSemitones(minFreq: number, maxFreq: number): { note: string; fr
   return semitones
 }
 
-const SEMITONES = generateSemitones(MIN_FREQ, MAX_FREQ)
+export { ALL_NOTES }
 
 export function PitchGraph({
   frequency,
   targetNote,
   isActive,
   onToggle,
-  onNext,
-  onPrevious,
-  canGoNext,
-  canGoPrevious,
-  currentIndex,
-  totalNotes
+  onTargetChange,
+  toleranceCents,
+  onToleranceChange,
+  noteRange,
+  onNoteRangeChange,
 }: PitchGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const uplotRef = useRef<uPlot | null>(null)
@@ -77,16 +73,32 @@ export function PitchGraph({
   const lastFreqRef = useRef<number | null>(null)
   const animationRef = useRef<number | null>(null)
   const targetFreqRef = useRef<number>(noteToFrequency(targetNote))
+  const toleranceRef = useRef(toleranceCents)
+  const freqRangeRef = useRef({ min: noteToFrequency(noteRange.from), max: noteToFrequency(noteRange.to) })
+  const semitonesRef = useRef(generateSemitones(noteToFrequency(noteRange.from), noteToFrequency(noteRange.to)))
   const [size, setSize] = useState({ width: 800, height: 600 })
+  const [showSettings, setShowSettings] = useState(false)
 
-  // Update target frequency ref
+  // Update refs
   useEffect(() => {
     targetFreqRef.current = noteToFrequency(targetNote)
-    // Clear data when target changes
     dataRef.current = [[], []]
   }, [targetNote])
 
-  // Store latest frequency in ref
+  useEffect(() => {
+    toleranceRef.current = toleranceCents
+  }, [toleranceCents])
+
+  useEffect(() => {
+    const minFreq = noteToFrequency(noteRange.from)
+    const maxFreq = noteToFrequency(noteRange.to)
+    freqRangeRef.current = { min: minFreq, max: maxFreq }
+    semitonesRef.current = generateSemitones(minFreq, maxFreq)
+    if (uplotRef.current) {
+      uplotRef.current.setScale('y', { min: minFreq, max: maxFreq })
+    }
+  }, [noteRange])
+
   useEffect(() => {
     lastFreqRef.current = frequency
   }, [frequency])
@@ -94,18 +106,13 @@ export function PitchGraph({
   // Handle resize
   useEffect(() => {
     const updateSize = () => {
-      setSize({
-        width: window.innerWidth,
-        height: window.innerHeight
-      })
+      setSize({ width: window.innerWidth, height: window.innerHeight })
     }
-
     updateSize()
     window.addEventListener('resize', updateSize)
     return () => window.removeEventListener('resize', updateSize)
   }, [])
 
-  // Resize uPlot when size changes
   useEffect(() => {
     if (uplotRef.current) {
       uplotRef.current.setSize(size)
@@ -123,29 +130,13 @@ export function PitchGraph({
       cursor: { show: false },
       legend: { show: false },
       scales: {
-        x: {
-          time: false,
-          auto: false,
-          range: [0, TIME_WINDOW],
-        },
-        y: {
-          auto: false,
-          range: [MIN_FREQ, MAX_FREQ],
-          distr: 3, // Log scale
-        },
+        x: { time: false, auto: false, range: [0, TIME_WINDOW] },
+        y: { auto: false, range: [noteToFrequency(noteRange.from), noteToFrequency(noteRange.to)], distr: 3 },
       },
-      axes: [
-        { show: false },
-        { show: false },
-      ],
+      axes: [{ show: false }, { show: false }],
       series: [
         {},
-        {
-          stroke: 'rgba(255,255,255,0.9)',
-          width: 3,
-          spanGaps: false,
-          points: { show: false },
-        },
+        { stroke: 'rgba(255,255,255,0.9)', width: 3, spanGaps: false, points: { show: false } },
       ],
       hooks: {
         draw: [
@@ -153,67 +144,52 @@ export function PitchGraph({
             const ctx = u.ctx
             const { left, top, width, height } = u.bbox
             const targetFreq = targetFreqRef.current
+            const tolerance = toleranceRef.current
+            const range = freqRangeRef.current
+            const semitones = semitonesRef.current
+            const cents = { perfect: tolerance, close: tolerance * 2, far: tolerance * 3 }
 
-            // Draw piano-style semitone lines
+            // Draw piano-style semitone bands
             ctx.font = '14px system-ui, sans-serif'
             ctx.textBaseline = 'middle'
 
-            SEMITONES.forEach(({ note, freq, isBlack }) => {
+            semitones.forEach(({ note, freq, isBlack }) => {
               const y = u.valToPos(freq, 'y', true)
-
-              // Background stripe for each semitone
               const nextFreq = freq * Math.pow(2, 1 / 12)
               const prevFreq = freq * Math.pow(2, -1 / 12)
               const topY = u.valToPos(Math.sqrt(freq * nextFreq), 'y', true)
               const bottomY = u.valToPos(Math.sqrt(freq * prevFreq), 'y', true)
 
-              // Alternate colors like piano keys
-              if (isBlack) {
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
-              } else {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
-              }
+              ctx.fillStyle = isBlack ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.05)'
               ctx.fillRect(left, topY, width, bottomY - topY)
 
-              // Draw line at exact note frequency
-              ctx.strokeStyle = isBlack ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.2)'
-              ctx.lineWidth = 1
-              ctx.beginPath()
-              ctx.moveTo(left, y)
-              ctx.lineTo(left + width, y)
-              ctx.stroke()
-
-              // Note label on the right side
               ctx.fillStyle = isBlack ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.7)'
               ctx.textAlign = 'right'
               ctx.fillText(note, left + width - 10, y)
             })
 
-            // Draw bands around target frequency
-            if (targetFreq >= MIN_FREQ && targetFreq <= MAX_FREQ) {
+            // Draw tolerance bands around target
+            if (targetFreq >= range.min && targetFreq <= range.max) {
               // Far band (red)
-              const farUpper = targetFreq * Math.pow(2, CENTS_FAR / 1200)
-              const farLower = targetFreq * Math.pow(2, -CENTS_FAR / 1200)
-              const farUpperY = u.valToPos(Math.min(farUpper, MAX_FREQ), 'y', true)
-              const farLowerY = u.valToPos(Math.max(farLower, MIN_FREQ), 'y', true)
+              const farUpper = targetFreq * Math.pow(2, cents.far / 1200)
+              const farLower = targetFreq * Math.pow(2, -cents.far / 1200)
               ctx.fillStyle = 'rgba(239, 68, 68, 0.15)'
-              ctx.fillRect(left, farUpperY, width, farLowerY - farUpperY)
+              ctx.fillRect(left, u.valToPos(Math.min(farUpper, range.max), 'y', true), width,
+                u.valToPos(Math.max(farLower, range.min), 'y', true) - u.valToPos(Math.min(farUpper, range.max), 'y', true))
 
               // Close band (yellow)
-              const closeUpper = targetFreq * Math.pow(2, CENTS_CLOSE / 1200)
-              const closeLower = targetFreq * Math.pow(2, -CENTS_CLOSE / 1200)
-              const closeUpperY = u.valToPos(closeUpper, 'y', true)
-              const closeLowerY = u.valToPos(closeLower, 'y', true)
+              const closeUpper = targetFreq * Math.pow(2, cents.close / 1200)
+              const closeLower = targetFreq * Math.pow(2, -cents.close / 1200)
               ctx.fillStyle = 'rgba(234, 179, 8, 0.2)'
-              ctx.fillRect(left, closeUpperY, width, closeLowerY - closeUpperY)
+              ctx.fillRect(left, u.valToPos(closeUpper, 'y', true), width,
+                u.valToPos(closeLower, 'y', true) - u.valToPos(closeUpper, 'y', true))
 
               // Perfect band (green)
-              const perfectUpper = targetFreq * Math.pow(2, CENTS_PERFECT / 1200)
-              const perfectLower = targetFreq * Math.pow(2, -CENTS_PERFECT / 1200)
-              const perfectUpperY = u.valToPos(perfectUpper, 'y', true)
-              const perfectLowerY = u.valToPos(perfectLower, 'y', true)
+              const perfectUpper = targetFreq * Math.pow(2, cents.perfect / 1200)
+              const perfectLower = targetFreq * Math.pow(2, -cents.perfect / 1200)
               ctx.fillStyle = 'rgba(34, 197, 94, 0.3)'
-              ctx.fillRect(left, perfectUpperY, width, perfectLowerY - perfectUpperY)
+              ctx.fillRect(left, u.valToPos(perfectUpper, 'y', true), width,
+                u.valToPos(perfectLower, 'y', true) - u.valToPos(perfectUpper, 'y', true))
 
               // Target line
               const targetY = u.valToPos(targetFreq, 'y', true)
@@ -227,7 +203,7 @@ export function PitchGraph({
               ctx.setLineDash([])
             }
 
-            // Draw center line (now)
+            // Center line
             const centerX = left + width / 2
             ctx.strokeStyle = 'rgba(255,255,255,0.2)'
             ctx.lineWidth = 2
@@ -236,28 +212,22 @@ export function PitchGraph({
             ctx.lineTo(centerX, top + height)
             ctx.stroke()
 
-            // Draw current point at center
+            // Current point
             const data = dataRef.current
             if (data[0].length > 0 && data[1].length > 0) {
               const lastFreq = data[1][data[1].length - 1]
-
-              if (lastFreq !== null && lastFreq >= MIN_FREQ && lastFreq <= MAX_FREQ) {
+              if (lastFreq !== null && lastFreq >= range.min && lastFreq <= range.max) {
                 const x = centerX
                 const y = u.valToPos(lastFreq, 'y', true)
+                const centsOff = Math.abs(1200 * Math.log2(lastFreq / targetFreq))
+                let color = '#ef4444'
+                if (centsOff <= cents.perfect) color = '#22c55e'
+                else if (centsOff <= cents.close) color = '#eab308'
 
-                // Color based on distance from target
-                const cents = Math.abs(1200 * Math.log2(lastFreq / targetFreq))
-                let color = '#ef4444' // Red
-                if (cents <= CENTS_PERFECT) color = '#22c55e' // Green
-                else if (cents <= CENTS_CLOSE) color = '#eab308' // Yellow
-
-                // Glow
                 ctx.beginPath()
                 ctx.fillStyle = color + '40'
                 ctx.arc(x, y, 24, 0, Math.PI * 2)
                 ctx.fill()
-
-                // Point
                 ctx.beginPath()
                 ctx.fillStyle = color
                 ctx.arc(x, y, 12, 0, Math.PI * 2)
@@ -269,26 +239,19 @@ export function PitchGraph({
       },
     }
 
-    const initialData: [number[], (number | null)[]] = [[], []]
-    uplotRef.current = new uPlot(opts, initialData, containerRef.current)
-
+    uplotRef.current = new uPlot(opts, [[], []], containerRef.current)
     return () => {
       uplotRef.current?.destroy()
       uplotRef.current = null
     }
-  }, [])
+  }, [noteRange.from, noteRange.to, size.width, size.height])
 
-  // Animation loop for continuous scrolling
+  // Animation loop
   useEffect(() => {
     if (!isActive) {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current)
       dataRef.current = [[], []]
-      if (uplotRef.current) {
-        uplotRef.current.setData([[], []])
-      }
+      uplotRef.current?.setData([[], []])
       return
     }
 
@@ -297,13 +260,11 @@ export function PitchGraph({
 
     const update = () => {
       if (!uplotRef.current) return
-
       const now = (performance.now() - startTimeRef.current) / 1000
       const data = dataRef.current
-      const freq = lastFreqRef.current
 
       data[0].push(now)
-      data[1].push(freq)
+      data[1].push(lastFreqRef.current)
 
       const minTime = now - TIME_WINDOW / 2
       while (data[0].length > 0 && data[0][0] < minTime) {
@@ -311,33 +272,21 @@ export function PitchGraph({
         data[1].shift()
       }
 
-      const halfWindow = TIME_WINDOW / 2
-      uplotRef.current.setScale('x', { min: now - halfWindow, max: now + halfWindow })
+      uplotRef.current.setScale('x', { min: now - TIME_WINDOW / 2, max: now + TIME_WINDOW / 2 })
       uplotRef.current.setData([data[0], data[1]])
-
       animationRef.current = requestAnimationFrame(update)
     }
 
     animationRef.current = requestAnimationFrame(update)
-
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-    }
+    return () => { if (animationRef.current) cancelAnimationFrame(animationRef.current) }
   }, [isActive])
 
-  // Redraw when target changes
   useEffect(() => {
-    if (uplotRef.current) {
-      uplotRef.current.redraw()
-    }
-  }, [targetNote])
+    uplotRef.current?.redraw()
+  }, [targetNote, toleranceCents, noteRange])
 
   return (
     <div className="relative w-full h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-      {/* Graph container */}
       <div ref={containerRef} className="absolute inset-0" />
 
       {/* Target note label */}
@@ -346,40 +295,88 @@ export function PitchGraph({
         <div className="text-6xl font-bold">{targetNote}</div>
       </div>
 
-      {/* Progress dots */}
-      <div className="absolute top-6 right-6 flex gap-2">
-        {Array.from({ length: totalNotes }).map((_, i) => (
-          <div
-            key={i}
-            className={`w-3 h-3 rounded-full transition-all ${
-              i === currentIndex
-                ? 'bg-white scale-125'
-                : i < currentIndex
-                  ? 'bg-green-500'
-                  : 'bg-white/30'
-            }`}
-          />
-        ))}
-      </div>
+      {/* Settings toggle */}
+      <button
+        onClick={() => setShowSettings(!showSettings)}
+        className="absolute top-6 right-6 w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center"
+      >
+        <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+      </button>
+
+      {/* Settings panel */}
+      {showSettings && (
+        <div className="absolute top-20 right-6 w-80 bg-slate-800/95 backdrop-blur rounded-xl p-4 space-y-4 text-white">
+          <h3 className="font-bold text-lg">Configuracion</h3>
+
+          {/* Target note */}
+          <div>
+            <label className="block text-sm opacity-70 mb-1">Nota objetivo</label>
+            <select
+              value={targetNote}
+              onChange={(e) => onTargetChange(e.target.value)}
+              className="w-full bg-slate-700 rounded px-3 py-2"
+            >
+              {ALL_NOTES.map(note => (
+                <option key={note} value={note}>{note}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Note range */}
+          <div>
+            <label className="block text-sm opacity-70 mb-1">Rango de notas</label>
+            <div className="flex gap-2 items-center">
+              <select
+                value={noteRange.from}
+                onChange={(e) => onNoteRangeChange(e.target.value, noteRange.to)}
+                className="flex-1 bg-slate-700 rounded px-3 py-2"
+              >
+                {ALL_NOTES.map(note => (
+                  <option key={note} value={note}>{note}</option>
+                ))}
+              </select>
+              <span className="opacity-50">a</span>
+              <select
+                value={noteRange.to}
+                onChange={(e) => onNoteRangeChange(noteRange.from, e.target.value)}
+                className="flex-1 bg-slate-700 rounded px-3 py-2"
+              >
+                {ALL_NOTES.map(note => (
+                  <option key={note} value={note}>{note}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Tolerance */}
+          <div>
+            <label className="block text-sm opacity-70 mb-1">Tolerancia: {toleranceCents} cents</label>
+            <input
+              type="range"
+              min="5"
+              max="50"
+              value={toleranceCents}
+              onChange={(e) => onToleranceChange(Number(e.target.value))}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs opacity-50 mt-1">
+              <span>Perfecto: ±{toleranceCents}</span>
+              <span>Cerca: ±{toleranceCents * 2}</span>
+              <span>Lejos: ±{toleranceCents * 3}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Controls */}
       <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4">
         <button
-          onClick={onPrevious}
-          disabled={!canGoPrevious}
-          className="w-14 h-14 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all"
-        >
-          <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-
-        <button
           onClick={onToggle}
           className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${
-            isActive
-              ? 'bg-red-500 hover:bg-red-600'
-              : 'bg-green-500 hover:bg-green-600'
+            isActive ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'
           }`}
         >
           {isActive ? (
@@ -393,35 +390,9 @@ export function PitchGraph({
             </svg>
           )}
         </button>
-
-        <button
-          onClick={onNext}
-          disabled={!canGoNext}
-          className="w-14 h-14 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all"
-        >
-          <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-8 right-6 flex flex-col gap-2 text-sm text-white/70">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-green-500/50" />
-          <span>Perfecto</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-yellow-500/50" />
-          <span>Cerca</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded bg-red-500/50" />
-          <span>Lejos</span>
-        </div>
-      </div>
-
-      {/* Instructions when not active */}
+      {/* Instructions */}
       {!isActive && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-white/40 text-2xl">Pulsa el boton para empezar</div>
